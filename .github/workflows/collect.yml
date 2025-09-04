@@ -29,46 +29,39 @@ jobs:
         if: steps.gate.outputs.in_window == 'true'
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Run nap() and append point
+      - name: Collect 5 one-minute samples
         if: steps.gate.outputs.in_window == 'true'
         env:
           WISE_TOKEN: ${{ secrets.WISE_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-
-          . scripts/rates.sh
-          OUT=$(nap)
-
-          mc_rate=$(echo "$OUT" | awk 'NR>1 && $1=="mc"{print $2}')
-          visa_rate=$(echo "$OUT" | awk 'NR>1 && $1=="visa"{print $2}')
-          wise_rate=$(echo "$OUT" | awk 'NR>1 && $1=="wise"{print $2}')
-
-          if [ -z "${mc_rate:-}" ] || [ -z "${visa_rate:-}" ] || [ -z "${wise_rate:-}" ]; then
-            echo "Missing a rate in nap() output; not writing."
-            echo "$OUT"
-            exit 0
-          fi
-
-          TS=$(TZ=America/Los_Angeles date -Iseconds)
           mkdir -p docs
           [ -f docs/data.json ] || echo "[]" > docs/data.json
-
-          tmp=$(mktemp)
-          jq --arg ts "$TS" \
-             --arg mc "$mc_rate" \
-             --arg visa "$visa_rate" \
-             --arg wise "$wise_rate" '
-            . + [{
-              ts: $ts,
-              mc:   ($mc   | tonumber),
-              visa: ($visa | tonumber),
-              wise: ($wise | tonumber),
-              spread_mc:   (($wise | tonumber) - ($mc   | tonumber)),
-              spread_visa: (($wise | tonumber) - ($visa | tonumber))
-            }] | (.[-19800:] // .)   # 30 days @ 5-min cadence
-          ' docs/data.json > "$tmp"
-          mv "$tmp" docs/data.json
+          
+          collect_once() {
+            . scripts/rates.sh
+            OUT=$(nap)
+            mc=$(echo "$OUT"   | awk 'NR>1 && $1=="mc"{print $2}')
+            vi=$(echo "$OUT"   | awk 'NR>1 && $1=="visa"{print $2}')
+            wi=$(echo "$OUT"   | awk 'NR>1 && $1=="wise"{print $2}')
+            [ -n "$mc" ] && [ -n "$vi" ] && [ -n "$wi" ] || return 0
+            TS=$(TZ=America/Los_Angeles date -Iseconds)
+            tmp=$(mktemp)
+            jq --arg ts "$TS" --arg mc "$mc" --arg vi "$vi" --arg wi "$wi" '
+              . + [{
+                ts:$ts, mc:($mc|tonumber), visa:($vi|tonumber), wise:($wi|tonumber),
+                spread_mc:(($wi|tonumber)-($mc|tonumber)),
+                spread_visa:(($wi|tonumber)-($vi|tonumber))
+              }] | (.[-19800:] // .)   # 30d @ 1-min cadence (11h/day ≈ 19,800)
+            ' docs/data.json > "$tmp"
+            mv "$tmp" docs/data.json
+          }
+          
+          for i in 1 2 3 4 5; do
+            collect_once
+            [ "$i" -lt 5 ] && sleep 60
+          done
 
       - name: Commit & push if changed
         if: steps.gate.outputs.in_window == 'true'
