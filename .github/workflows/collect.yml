@@ -29,7 +29,7 @@ jobs:
         if: steps.gate.outputs.in_window == 'true'
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Collect 5 one-minute samples
+      - name: Collect samples (prints nap() & keeps going)
         if: steps.gate.outputs.in_window == 'true'
         env:
           WISE_TOKEN: ${{ secrets.WISE_TOKEN }}
@@ -39,13 +39,22 @@ jobs:
           mkdir -p docs
           [ -f docs/data.json ] || echo "[]" > docs/data.json
           
+          . scripts/rates.sh || { echo "Could not source scripts/rates.sh"; exit 0; }
+          
           collect_once() {
-            . scripts/rates.sh
-            OUT=$(nap)
-            mc=$(echo "$OUT"   | awk 'NR>1 && $1=="mc"{print $2}')
-            vi=$(echo "$OUT"   | awk 'NR>1 && $1=="visa"{print $2}')
-            wi=$(echo "$OUT"   | awk 'NR>1 && $1=="wise"{print $2}')
-            [ -n "$mc" ] && [ -n "$vi" ] && [ -n "$wi" ] || return 0
+            OUT=$(nap 2>&1) || true
+            echo "---- nap() output ----"
+            echo "$OUT"
+            echo "----------------------"
+          
+            mc=$(echo "$OUT" | awk 'NR>1 && $1=="mc"{print $2}')
+            vi=$(echo "$OUT" | awk 'NR>1 && $1=="visa"{print $2}')
+            wi=$(echo "$OUT" | awk 'NR>1 && $1=="wise"{print $2}')
+            echo "Parsed -> mc=$mc visa=$vi wise=$wi"
+          
+            # If any missing, skip but don't fail
+            [ -z "${mc:-}" ] || [ -z "${vi:-}" ] || [ -z "${wi:-}" ] && return 0
+          
             TS=$(TZ=America/Los_Angeles date -Iseconds)
             tmp=$(mktemp)
             jq --arg ts "$TS" --arg mc "$mc" --arg vi "$vi" --arg wi "$wi" '
@@ -53,7 +62,7 @@ jobs:
                 ts:$ts, mc:($mc|tonumber), visa:($vi|tonumber), wise:($wi|tonumber),
                 spread_mc:(($wi|tonumber)-($mc|tonumber)),
                 spread_visa:(($wi|tonumber)-($vi|tonumber))
-              }] | (.[-19800:] // .)   # 30d @ 1-min cadence (11h/day ≈ 19,800)
+              }] | (.[-19800:] // .)
             ' docs/data.json > "$tmp"
             mv "$tmp" docs/data.json
           }
@@ -62,6 +71,9 @@ jobs:
             collect_once
             [ "$i" -lt 5 ] && sleep 60
           done
+          
+          echo "Tail of data.json:"
+          tail -n 30 docs/data.json || true
 
       - name: Commit & push if changed
         if: steps.gate.outputs.in_window == 'true'
@@ -75,3 +87,39 @@ jobs:
           else
             echo "No changes"
           fi
+
+    # .github/workflows/debug-once.yml
+    name: Debug collect once
+    on: { workflow_dispatch: {} }
+    jobs:
+      once:
+        runs-on: ubuntu-latest
+        permissions: { contents: write }
+        steps:
+          - uses: actions/checkout@v4
+          - run: sudo apt-get update && sudo apt-get install -y jq
+          - env: { WISE_TOKEN: ${{ secrets.WISE_TOKEN }} }
+            shell: bash
+            run: |
+              set -euo pipefail
+              . scripts/rates.sh
+              OUT=$(nap); echo "$OUT"
+              mc=$(echo "$OUT"|awk 'NR>1 && $1=="mc"{print $2}')
+              vi=$(echo "$OUT"|awk 'NR>1 && $1=="visa"{print $2}')
+              wi=$(echo "$OUT"|awk 'NR>1 && $1=="wise"{print $2}')
+              [ -n "$mc" ] && [ -n "$vi" ] && [ -n "$wi" ] || { echo "parse failed"; exit 0; }
+              mkdir -p docs; [ -f docs/data.json ] || echo "[]" > docs/data.json
+              TS=$(TZ=America/Los_Angeles date -Iseconds)
+              tmp=$(mktemp)
+              jq --arg ts "$TS" --arg mc "$mc" --arg vi "$vi" --arg wi "$wi" \
+                 '. + [{ts:$ts, mc:($mc|tonumber), visa:($vi|tonumber), wise:($wi|tonumber),
+                        spread_mc:(($wi|tonumber)-($mc|tonumber)),
+                        spread_visa:(($wi|tonumber)-($vi|tonumber))}]' \
+                 docs/data.json > "$tmp"
+              mv "$tmp" docs/data.json
+          - run: |
+              git config user.name "${GITHUB_ACTOR}"
+              git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+              git add docs/data.json
+              git commit -m "debug sample" || echo "no changes"
+              git push || true
