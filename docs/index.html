@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>FX Rates (5-min)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 1rem; }
+    #chart { width: 100%; max-width: 1200px; height: 70vh; margin: 0 auto; }
+    .note { max-width: 1200px; margin: 0.5rem auto; color: #555; }
+  </style>
+</head>
+<body>
+  <h2>FX Rates (updated every 5 minutes)</h2>
+  <div class="note">Window: 5:00 AM–4:00 PM PT • Visa=blue, MC=red, Wise=green</div>
+  <div id="chart"></div>
+
+  <script>
+    async function loadData() {
+      const res = await fetch('data.json', { cache: 'no-cache' });
+      return res.ok ? res.json() : [];
+    }
+
+    function draw(data) {
+      const ts   = data.map(d => d.ts);
+      const visa = data.map(d => d.visa);
+      const mc   = data.map(d => d.mc);
+      const wise = data.map(d => d.wise);
+
+      const traces = [
+        { x: ts, y: visa, mode: 'lines', name: 'Visa', line: { color: 'blue',  width: 2 } },
+        { x: ts, y: mc,   mode: 'lines', name: 'MC',   line: { color: 'red',   width: 2 } },
+        { x: ts, y: wise, mode: 'lines', name: 'Wise', line: { color: 'green', width: 2 } },
+      ];
+
+      Plotly.newPlot('chart', traces, {
+        margin: { t: 20, r: 10, l: 50, b: 40 },
+        xaxis: { title: 'Time (PT)', type: 'date' },
+        yaxis: { title: 'Rate' },
+        hovermode: 'x unified'
+      }, {responsive: true});
+    }
+
+    async function init() {
+      draw(await loadData());
+      setInterval(async () => draw(await loadData()), 60_000);
+    }
+    init();
+  </script>
+</body>
+</html>
+
