@@ -37,93 +37,93 @@
         return res.ok ? res.json() : [];
     }
 
-    // Format a Date or ISO string into YYYY-MM-DD in PT
+    // Helpers
     function toPTDateString(iso) {
         const d = new Date(iso);
         const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
         return fmt.format(d); // YYYY-MM-DD
     }
-
-    // Build a Set of the last N PT calendar-day strings including today
-    function lastNDaysPT(n) {
-        const set = new Set();
+    function ptMidnight(date) {
+        // returns [start,end) ISO strings for that PT calendar day
+        const z = new Date(date);
+        const y = new Intl.DateTimeFormat('en', { timeZone: TZ, year: 'numeric' }).format(z);
+        const m = new Intl.DateTimeFormat('en', { timeZone: TZ, month: '2-digit' }).format(z);
+        const d = new Intl.DateTimeFormat('en', { timeZone: TZ, day: '2-digit' }).format(z);
+        const start = new Date(`${y}-${m}-${d}T00:00:00-08:00`); // offset gets corrected by DST below
+        // Rebuild with correct offset using the timeZone option
+        const startMs = new Date(new Date(start).toLocaleString('en-US', { timeZone: TZ })).getTime();
+        const endMs   = startMs + 24*60*60*1000 - 1;
+        return [new Date(startMs).toISOString(), new Date(endMs).toISOString()];
+    }
+    function computeRange(tag) {
         const now = new Date();
-        for (let i = 0; i < n; i++) {
-            const d = new Date(now);
-            d.setDate(now.getDate() - i);
-            set.add(toPTDateString(d.toISOString()));
-        }
-        return set;
+        if (tag === 'today') return ptMidnight(now);
+        const days = tag === '2d' ? 2 : tag === '5d' ? 5 : 30;
+        const [endStart] = ptMidnight(now);
+        const end = new Date(endStart); end.setUTCDate(end.getUTCDate() + 1); // exclusive end = tomorrow PT midnight
+        const start = new Date(end); start.setUTCDate(start.getUTCDate() - days);
+        return [start.toISOString(), end.toISOString()];
     }
 
-    function filterByRange(data, rangeTag) {
-        if (rangeTag === 'today') {
-            const today = toPTDateString(new Date().toISOString());
-            return data.filter(d => toPTDateString(d.ts) === today);
-        }
-        const days = rangeTag === '2d' ? 2 : rangeTag === '5d' ? 5 : 30;
-        const allowed = lastNDaysPT(days);
-        return data.filter(d => allowed.has(toPTDateString(d.ts)));
+    function filterByRange(data, [startIso, endIso]) {
+        const start = new Date(startIso).getTime();
+        const end   = new Date(endIso).getTime();
+        return data.filter(d => {
+            const t = new Date(d.ts).getTime();
+            return t >= start && t < end;
+        });
     }
 
-    function drawAll(data) {
+    function drawAll(data, [xStart, xEnd]) {
         const ts   = data.map(d => d.ts);
         const visa = data.map(d => d.visa);
         const mc   = data.map(d => d.mc);
         const wise = data.map(d => d.wise);
 
-        const rates = [
+        Plotly.newPlot('chart', [
             { x: ts, y: visa, mode: 'lines', name: 'Visa', line: { color: 'blue',  width: 2 } },
             { x: ts, y: mc,   mode: 'lines', name: 'MC',   line: { color: 'red',   width: 2 } },
             { x: ts, y: wise, mode: 'lines', name: 'Wise', line: { color: 'green', width: 2 } },
-        ];
-        Plotly.newPlot('chart', rates, {
+        ], {
             margin: { t: 10, r: 10, l: 50, b: 40 },
-            xaxis: { title: 'Time (PT)', type: 'date' },
+            xaxis: { title: 'Time (PT)', type: 'date', range: [xStart, xEnd] },
             yaxis: { title: 'Rate' },
             hovermode: 'x unified'
         }, {responsive: true});
 
-        const spreads = [
+        Plotly.newPlot('spreads', [
             { x: ts, y: data.map(d => d.spread_mc),   mode: 'lines', name: 'Wise - MC',   line: { width: 2 } },
             { x: ts, y: data.map(d => d.spread_visa), mode: 'lines', name: 'Wise - Visa', line: { width: 2 } },
-        ];
-        Plotly.newPlot('spreads', spreads, {
+        ], {
             margin: { t: 10, r: 10, l: 50, b: 40 },
-            xaxis: { title: 'Time (PT)', type: 'date' },
+            xaxis: { title: 'Time (PT)', type: 'date', range: [xStart, xEnd] },
             yaxis: { title: 'Spread' },
             hovermode: 'x unified'
         }, {responsive: true});
     }
 
     async function init() {
-        const raw = await loadData();
+        let raw = await loadData();
 
-        // Buttons behavior
         const btns = Array.from(document.querySelectorAll('.btn'));
-        function setActive(tag) {
-            btns.forEach(b => b.classList.toggle('active', b.dataset.range === tag));
-        }
+        let active = 'today';
+
         function apply(tag) {
-            setActive(tag);
-            drawAll(filterByRange(raw, tag));
+            active = tag;
+            btns.forEach(b => b.classList.toggle('active', b.dataset.range === tag));
+            const xr = computeRange(tag);
+            drawAll(filterByRange(raw, xr), xr);
         }
 
-        // Default view: today
         apply('today');
 
-        // Hook clicks
         btns.forEach(b => b.addEventListener('click', () => apply(b.dataset.range)));
 
-        // Light auto-refresh
         setInterval(async () => {
-            const latest = await loadData();
-            // Keep current selection
-            const active = document.querySelector('.btn.active')?.dataset.range || 'today';
-            drawAll(filterByRange(latest, active));
+            raw = await loadData();
+            apply(active);
         }, 60_000);
     }
-
     init();
 </script>
 </body>
