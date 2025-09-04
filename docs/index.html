@@ -1,53 +1,130 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>FX Rates (5-min)</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 1rem; }
-    #chart { width: 100%; max-width: 1200px; height: 70vh; margin: 0 auto; }
-    .note { max-width: 1200px; margin: 0.5rem auto; color: #555; }
-  </style>
+    <meta charset="utf-8" />
+    <title>FX Rates (5-min)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 1rem; }
+        #chart, #spreads { width: 100%; max-width: 1200px; height: 48vh; margin: 0 auto 1rem; }
+        .bar { max-width: 1200px; margin: 0 auto 0.5rem; display: flex; gap: .5rem; align-items: center; }
+        .btn { padding: .4rem .7rem; border-radius: .5rem; border: 1px solid #ddd; cursor: pointer; background: #fafafa; }
+        .btn.active { background: #e9f0ff; border-color: #bcd0ff; }
+        .note { color: #555; }
+    </style>
 </head>
 <body>
-  <h2>FX Rates (updated every 5 minutes)</h2>
-  <div class="note">Window: 5:00 AM–4:00 PM PT • Visa=blue, MC=red, Wise=green</div>
-  <div id="chart"></div>
+<h2>FX Rates (updated every 5 minutes)</h2>
+<div class="bar">
+    <div class="note">Window: 5:00 AM–4:00 PM PT • Visa=blue, MC=red, Wise=green • Data retention: 30 days</div>
+</div>
+<div class="bar">
+    <button class="btn" data-range="today">Today</button>
+    <button class="btn" data-range="2d">2d</button>
+    <button class="btn" data-range="5d">5d</button>
+    <button class="btn" data-range="30d">30d</button>
+</div>
 
-  <script>
+<div id="chart"></div>
+<div id="spreads"></div>
+
+<script>
+    const TZ = 'America/Los_Angeles';
+
     async function loadData() {
-      const res = await fetch('data.json', { cache: 'no-cache' });
-      return res.ok ? res.json() : [];
+        const res = await fetch('data.json', { cache: 'no-cache' });
+        return res.ok ? res.json() : [];
     }
 
-    function draw(data) {
-      const ts   = data.map(d => d.ts);
-      const visa = data.map(d => d.visa);
-      const mc   = data.map(d => d.mc);
-      const wise = data.map(d => d.wise);
+    // Format a Date or ISO string into YYYY-MM-DD in PT
+    function toPTDateString(iso) {
+        const d = new Date(iso);
+        const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+        return fmt.format(d); // YYYY-MM-DD
+    }
 
-      const traces = [
-        { x: ts, y: visa, mode: 'lines', name: 'Visa', line: { color: 'blue',  width: 2 } },
-        { x: ts, y: mc,   mode: 'lines', name: 'MC',   line: { color: 'red',   width: 2 } },
-        { x: ts, y: wise, mode: 'lines', name: 'Wise', line: { color: 'green', width: 2 } },
-      ];
+    // Build a Set of the last N PT calendar-day strings including today
+    function lastNDaysPT(n) {
+        const set = new Set();
+        const now = new Date();
+        for (let i = 0; i < n; i++) {
+            const d = new Date(now);
+            d.setDate(now.getDate() - i);
+            set.add(toPTDateString(d.toISOString()));
+        }
+        return set;
+    }
 
-      Plotly.newPlot('chart', traces, {
-        margin: { t: 20, r: 10, l: 50, b: 40 },
-        xaxis: { title: 'Time (PT)', type: 'date' },
-        yaxis: { title: 'Rate' },
-        hovermode: 'x unified'
-      }, {responsive: true});
+    function filterByRange(data, rangeTag) {
+        if (rangeTag === 'today') {
+            const today = toPTDateString(new Date().toISOString());
+            return data.filter(d => toPTDateString(d.ts) === today);
+        }
+        const days = rangeTag === '2d' ? 2 : rangeTag === '5d' ? 5 : 30;
+        const allowed = lastNDaysPT(days);
+        return data.filter(d => allowed.has(toPTDateString(d.ts)));
+    }
+
+    function drawAll(data) {
+        const ts   = data.map(d => d.ts);
+        const visa = data.map(d => d.visa);
+        const mc   = data.map(d => d.mc);
+        const wise = data.map(d => d.wise);
+
+        const rates = [
+            { x: ts, y: visa, mode: 'lines', name: 'Visa', line: { color: 'blue',  width: 2 } },
+            { x: ts, y: mc,   mode: 'lines', name: 'MC',   line: { color: 'red',   width: 2 } },
+            { x: ts, y: wise, mode: 'lines', name: 'Wise', line: { color: 'green', width: 2 } },
+        ];
+        Plotly.newPlot('chart', rates, {
+            margin: { t: 10, r: 10, l: 50, b: 40 },
+            xaxis: { title: 'Time (PT)', type: 'date' },
+            yaxis: { title: 'Rate' },
+            hovermode: 'x unified'
+        }, {responsive: true});
+
+        const spreads = [
+            { x: ts, y: data.map(d => d.spread_mc),   mode: 'lines', name: 'Wise - MC',   line: { width: 2 } },
+            { x: ts, y: data.map(d => d.spread_visa), mode: 'lines', name: 'Wise - Visa', line: { width: 2 } },
+        ];
+        Plotly.newPlot('spreads', spreads, {
+            margin: { t: 10, r: 10, l: 50, b: 40 },
+            xaxis: { title: 'Time (PT)', type: 'date' },
+            yaxis: { title: 'Spread' },
+            hovermode: 'x unified'
+        }, {responsive: true});
     }
 
     async function init() {
-      draw(await loadData());
-      setInterval(async () => draw(await loadData()), 60_000);
+        const raw = await loadData();
+
+        // Buttons behavior
+        const btns = Array.from(document.querySelectorAll('.btn'));
+        function setActive(tag) {
+            btns.forEach(b => b.classList.toggle('active', b.dataset.range === tag));
+        }
+        function apply(tag) {
+            setActive(tag);
+            drawAll(filterByRange(raw, tag));
+        }
+
+        // Default view: today
+        apply('today');
+
+        // Hook clicks
+        btns.forEach(b => b.addEventListener('click', () => apply(b.dataset.range)));
+
+        // Light auto-refresh
+        setInterval(async () => {
+            const latest = await loadData();
+            // Keep current selection
+            const active = document.querySelector('.btn.active')?.dataset.range || 'today';
+            drawAll(filterByRange(latest, active));
+        }, 60_000);
     }
+
     init();
-  </script>
+</script>
 </body>
 </html>
-

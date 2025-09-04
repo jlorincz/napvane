@@ -2,12 +2,15 @@ name: Collect FX rates
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
+    - cron: "* * * * *"   # every minute (UTC)
   workflow_dispatch: {}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # allow push with GITHUB_TOKEN
+
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -22,7 +25,7 @@ jobs:
             echo "in_window=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Ensure jq present
+      - name: Install jq
         if: steps.gate.outputs.in_window == 'true'
         run: sudo apt-get update && sudo apt-get install -y jq
 
@@ -34,64 +37,38 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Source your functions and call nap()
           . scripts/rates.sh
           OUT=$(nap)
 
-          # Parse the table
-          # Expected header: "Source  Rate  Marker  Spread"
-          # Rows: mc, visa, wise (wise has empty marker/spread)
-          parse() {
-            echo "$OUT" | awk 'NR>1 {print $1, $2, $3, $4}'
-          }
+          mc_rate=$(echo "$OUT" | awk 'NR>1 && $1=="mc"{print $2}')
+          visa_rate=$(echo "$OUT" | awk 'NR>1 && $1=="visa"{print $2}')
+          wise_rate=$(echo "$OUT" | awk 'NR>1 && $1=="wise"{print $2}')
 
-          mc_rate=$(parse | awk '$1=="mc"{print $2}')
-          visa_rate=$(parse | awk '$1=="visa"{print $2}')
-          wise_rate=$(parse | awk '$1=="wise"{print $2}')
-
-          # Fallback guard
           if [ -z "${mc_rate:-}" ] || [ -z "${visa_rate:-}" ] || [ -z "${wise_rate:-}" ]; then
-            echo "Missing a rate in nap() output; refusing to write." >&2
+            echo "Missing a rate in nap() output; not writing."
             echo "$OUT"
             exit 0
           fi
 
-          # PT timestamp (ISO)
-          ts=$(TZ=America/Los_Angeles date -Iseconds)
-
+          TS=$(TZ=America/Los_Angeles date -Iseconds)
           mkdir -p docs
           [ -f docs/data.json ] || echo "[]" > docs/data.json
 
-          # Append new point, keep last ~3 days (12 points/hour * 24 * 3 = 864)
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = 'docs/data.json';
-          const data = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path,'utf8')) : [];
-          const point = {
-            ts: process.env.TS,
-            mc:   parseFloat(process.env.MC),
-            visa: parseFloat(process.env.VISA),
-            wise: parseFloat(process.env.WISE),
-            spread_mc:   parseFloat(process.env.WISE) - parseFloat(process.env.MC),
-            spread_visa: parseFloat(process.env.WISE) - parseFloat(process.env.VISA)
-          };
-          data.push(point);
-          const trimmed = data.slice(-864);
-          fs.writeFileSync(path, JSON.stringify(trimmed, null, 2));
-          NODE
-        env:
-          TS: ${{ steps.gate.outputs.in_window && '' }}
-        # re-export envs properly (Actions quirk)
-      - name: Export envs for Node step
-        if: steps.gate.outputs.in_window == 'true'
-        run: |
-          echo "TS=$(TZ=America/Los_Angeles date -Iseconds)" >> $GITHUB_ENV
-          . scripts/rates.sh
-          OUT=$(nap)
-          echo "$OUT" | awk 'NR>1 {print $1, $2}' > /tmp/rates.txt
-          echo "MC=$(awk '$1=="mc"{print $2}' /tmp/rates.txt)" >> $GITHUB_ENV
-          echo "VISA=$(awk '$1=="visa"{print $2}' /tmp/rates.txt)" >> $GITHUB_ENV
-          echo "WISE=$(awk '$1=="wise"{print $2}' /tmp/rates.txt)" >> $GITHUB_ENV
+          tmp=$(mktemp)
+          jq --arg ts "$TS" \
+             --arg mc "$mc_rate" \
+             --arg visa "$visa_rate" \
+             --arg wise "$wise_rate" '
+            . + [{
+              ts: $ts,
+              mc:   ($mc   | tonumber),
+              visa: ($visa | tonumber),
+              wise: ($wise | tonumber),
+              spread_mc:   (($wise | tonumber) - ($mc   | tonumber)),
+              spread_visa: (($wise | tonumber) - ($visa | tonumber))
+            }] | (.[-19800:] // .)   # 30 days @ 5-min cadence
+          ' docs/data.json > "$tmp"
+          mv "$tmp" docs/data.json
 
       - name: Commit & push if changed
         if: steps.gate.outputs.in_window == 'true'
@@ -105,4 +82,3 @@ jobs:
           else
             echo "No changes"
           fi
-
