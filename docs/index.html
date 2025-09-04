@@ -28,13 +28,23 @@
 
 <div id="chart"></div>
 <div id="spreads"></div>
+<div id="count" class="note" style="max-width:1200px;margin:0.5rem auto;"></div>
 
 <script>
     const TZ = 'America/Los_Angeles';
 
     async function loadData() {
-        const res = await fetch('data.json', { cache: 'no-cache' });
-        return res.ok ? res.json() : [];
+        try {
+            const res = await fetch('data.json?ts=' + Date.now(), { cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const json = await res.json();
+            console.log('Loaded points:', json.length);
+            return json;
+        } catch (e) {
+            console.error('Failed to load data.json:', e);
+            alert('Failed to load data.json: ' + e.message);
+            return [];
+        }
     }
 
     // Helpers
@@ -113,6 +123,8 @@
             btns.forEach(b => b.classList.toggle('active', b.dataset.range === tag));
             const xr = computeRange(tag);
             drawAll(filterByRange(raw, xr), xr);
+            document.getElementById('count').textContent =
+                `Points in view: ${data.length}`;
         }
 
         apply('today');
